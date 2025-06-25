@@ -43,6 +43,19 @@ from .ExperimentManager.models import ExperimentParams, ExperimentType
 from .ExperimentManager import ExperimentManager
 from .Evaluator import Evaluator
 from .DataLabeller import DataLabeller
+from .Detector.models import (
+    DetectorType,
+    DetectionStatus,
+    DetectionResult,
+    LLMResponseWithDetection,
+    DetectedExperimentDocument,
+)
+from .Detector import Detector
+from .Detector.tlm_detector import TLMDetector
+from .Detector.aws_bedrock_detector import AWSBedrockDetector
+from .Detector.azure_content_safety_detector import AzureContentSafetyDetector
+from .Detector.deepeval_detector import DeepEvalDetector
+from .Detector.ragas_detector import RagasDetector
 
 __all__ = ["KnowOrNot", "SyncLLMClient"]
 
@@ -61,6 +74,7 @@ class KnowOrNot:
         self.experiment_manager: Optional[ExperimentManager] = None
         self.evaluator: Optional[Evaluator] = None
         self.data_labeller: Optional[DataLabeller] = None
+        self.detector_registry: Dict[DetectorType, Detector] = {}
         self._setup_logger()
 
     def _setup_logger(self) -> None:
@@ -535,6 +549,250 @@ class KnowOrNot:
         openrouter_sync_client = SyncOpenRouterClient(config=openrouter_config)
 
         self.register_client(client=openrouter_sync_client, make_default=False)
+
+    def register_detector(
+        self, detector_type: DetectorType, config: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        Register a detector for a specific detection type.
+
+        Args:
+            detector_type: The type of detector to register
+            config: Optional configuration parameters for the detector
+        """
+        # Initialize detector based on type
+        detector: Detector
+        if detector_type == DetectorType.TLM:
+            detector = TLMDetector()
+        elif detector_type == DetectorType.AWS_BEDROCK:
+            detector = AWSBedrockDetector()
+        elif detector_type == DetectorType.AZURE_CONTENT_SAFETY:
+            detector = AzureContentSafetyDetector()
+        elif detector_type == DetectorType.DEEPEVAL:
+            detector = DeepEvalDetector()
+        elif detector_type == DetectorType.RAGAS:
+            detector = RagasDetector()
+        else:
+            raise ValueError(f"Unsupported detector type: {detector_type}")
+
+        # Configure detector if config provided
+        if config:
+            detector.configure(config)
+
+        # Register detector
+        if detector_type in self.detector_registry.keys():
+            self.logger.warning(
+                f"Overwriting existing detector for type {detector_type}"
+            )
+        self.detector_registry[detector_type] = detector
+        self.logger.info(f"Registered detector for type {detector_type}")
+
+    def detect_experiment(
+        self,
+        experiment_document_path: Path,
+        detector_types: List[DetectorType],
+        path_to_store: Path,
+        skip_function: Callable[
+            [LLMResponseWithEvaluation, DetectorType], Optional[DetectionResult]
+        ] = lambda x, y: None,
+        replace_failed: bool = True,
+    ) -> DetectedExperimentDocument:
+        """Detect experiment responses using specified detectors.
+
+        Args:
+            experiment_document_path: Path to the experiment document
+            detector_types: List of detector types to use
+            path_to_store: Path to store the detection results
+            skip_function: Optional function to skip certain detections.
+                         Takes a response and detector type, returns None to run detection
+                         or a DetectionResult to use instead.
+            replace_failed: If True, retry failed detections and replace them
+
+        Returns:
+            DetectedExperimentDocument: Document containing detection results
+        """
+        # Load experiment document
+        experiment_doc = EvaluatedExperimentDocument.load_from_json(
+            experiment_document_path
+        )
+
+        # Validate detector types
+        for detector_type in detector_types:
+            if detector_type not in self.detector_registry.keys():
+                raise ValueError(f"Detector type {detector_type} not registered")
+
+        # If output path exists and replace_failed is True, load and check for failed detections
+        detected_responses = []
+        existing_results = None
+        if path_to_store.exists():
+            existing_doc = DetectedExperimentDocument.load_from_json(path_to_store)
+            existing_results = {}
+            for r in existing_doc.responses:
+                if isinstance(r, dict):
+                    r = LLMResponseWithDetection.model_validate(r)
+                existing_results[r.llm_response.identifier] = r
+
+        for response in experiment_doc.responses:
+            response_detections = []
+            for detector_type in detector_types:
+                detector = self.detector_registry[detector_type]
+                skip_result = skip_function(response, detector_type)
+                if skip_result is not None:
+                    response_detections.append(skip_result)
+                    continue
+                # Check if we have an existing result
+                existing_detection = None
+                if existing_results:
+                    existing_response = existing_results.get(
+                        response.llm_response.identifier
+                    )
+                    if existing_response:
+                        for d in existing_response.detections:
+                            if d.detector_type == detector_type:
+                                existing_detection = d
+                                break
+                if existing_detection and (
+                    existing_detection.status != DetectionStatus.FAILED
+                    or not replace_failed
+                ):
+                    response_detections.append(existing_detection)
+                    continue
+                # Run detection (retry if failed or not present)
+                try:
+                    detection = detector.detect(response)
+                    response_detections.append(detection)
+                except Exception as e:
+                    self.logger.error(
+                        f"Detection failed for response {response.llm_response.identifier} with detector {detector_type}: {str(e)}"
+                    )
+                    response_detections.append(
+                        DetectionResult(
+                            detector_type=detector_type,
+                            confidence=None,
+                            explanation=f"Detection failed: {str(e)}",
+                            status=DetectionStatus.FAILED,
+                            error=str(e),
+                        )
+                    )
+            detected_responses.append(
+                LLMResponseWithDetection(
+                    llm_response=response.llm_response, detections=response_detections
+                )
+            )
+        detected_doc = DetectedExperimentDocument(
+            path_to_store=path_to_store,
+            experiment_metadata=experiment_doc.experiment_metadata.model_dump(),
+            evaluation_metadata=[
+                metadata.model_dump() for metadata in experiment_doc.evaluation_metadata
+            ],
+            responses=detected_responses,
+            detection_metadata={
+                detector_type: detector.metadata
+                for detector_type, detector in self.detector_registry.items()
+                if detector_type in detector_types
+            },
+        )
+        detected_doc.save_to_json()
+        return detected_doc
+
+    async def detect_experiment_async(
+        self,
+        experiment_document_path: Path,
+        detector_types: List[DetectorType],
+        path_to_store: Path,
+        skip_function: Callable[
+            [LLMResponseWithEvaluation, DetectorType], Optional[DetectionResult]
+        ] = lambda x, y: None,
+        replace_failed: bool = True,
+    ) -> DetectedExperimentDocument:
+        """Asynchronously detect experiment responses using specified detectors.
+
+        Args:
+            experiment_document_path: Path to the experiment document
+            detector_types: List of detector types to use
+            path_to_store: Path to store the detection results
+            skip_function: Optional function to skip certain detections.
+                         Takes a response and detector type, returns None to run detection
+                         or a DetectionResult to use instead.
+            replace_failed: If True, retry failed detections and replace them
+
+        Returns:
+            DetectedExperimentDocument: Document containing detection results
+        """
+        experiment_doc = EvaluatedExperimentDocument.load_from_json(
+            experiment_document_path
+        )
+        for detector_type in detector_types:
+            if detector_type not in self.detector_registry:
+                raise ValueError(f"Detector type {detector_type} not registered")
+        detected_responses = []
+        existing_results: Dict[str, LLMResponseWithDetection] = {}
+        if path_to_store.exists():
+            existing_doc = DetectedExperimentDocument.load_from_json(path_to_store)
+            for r in existing_doc.responses:
+                if isinstance(r, dict):
+                    r = LLMResponseWithDetection.model_validate(r)
+                existing_results[r.llm_response.identifier] = r
+        for response in experiment_doc.responses:
+            response_detections = []
+            for detector_type in detector_types:
+                detector = self.detector_registry[detector_type]
+                skip_result = skip_function(response, detector_type)
+                if skip_result is not None:
+                    response_detections.append(skip_result)
+                    continue
+                existing_detection = None
+                if existing_results:
+                    existing_response = existing_results.get(
+                        response.llm_response.identifier
+                    )
+                    if existing_response:
+                        for d in existing_response.detections:
+                            if d.detector_type == detector_type:
+                                existing_detection = d
+                                break
+                if existing_detection and (
+                    existing_detection.status != DetectionStatus.FAILED
+                    or not replace_failed
+                ):
+                    response_detections.append(existing_detection)
+                    continue
+                try:
+                    detection = await detector.detect_async(response)
+                    response_detections.append(detection)
+                except Exception as e:
+                    self.logger.error(
+                        f"Detection failed for response {response.llm_response.identifier} with detector {detector_type}: {str(e)}"
+                    )
+                    response_detections.append(
+                        DetectionResult(
+                            detector_type=detector_type,
+                            confidence=None,
+                            explanation=f"Detection failed: {str(e)}",
+                            status=DetectionStatus.FAILED,
+                            error=str(e),
+                        )
+                    )
+            detected_responses.append(
+                LLMResponseWithDetection(
+                    llm_response=response.llm_response, detections=response_detections
+                )
+            )
+        detected_doc = DetectedExperimentDocument(
+            path_to_store=path_to_store,
+            experiment_metadata=experiment_doc.experiment_metadata.model_dump(),
+            evaluation_metadata=[
+                metadata.model_dump() for metadata in experiment_doc.evaluation_metadata
+            ],
+            responses=detected_responses,
+            detection_metadata={
+                detector_type: detector.metadata
+                for detector_type, detector in self.detector_registry.items()
+                if detector_type in detector_types
+            },
+        )
+        detected_doc.save_to_json()
+        return detected_doc
 
     def create_questions(
         self,

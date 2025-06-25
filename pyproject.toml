@@ -8,6 +8,9 @@ authors = [
 ]
 requires-python = ">=3.10"
 dependencies = [
+    "boto3>=1.37.0",
+    "cleanlab-tlm>=1.0.8",
+    "deepeval>=0.20.0",
     "google-genai>=1.2.0",
     "google-generativeai>=0.8.5",
     "instructor>=1.7.9",
@@ -23,6 +26,7 @@ dependencies = [
     "pytest-asyncio>=0.26.0",
     "python-dotenv>=1.1.0",
     "pyyaml>=6.0.2",
+    "ragas>=0.2.15",
     "requests>=2.32.3",
     "scikit-learn>=1.6.1",
     "statsmodels>=0.14.4",
@@ -33,4 +37,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [dependency-groups]
-dev = []
+dev = [
+    "knowornot",
+]
+
+[tool.uv.sources]
+knowornot = { workspace = true }
