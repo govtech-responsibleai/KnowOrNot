@@ -8,8 +8,12 @@ authors = [
 ]
 requires-python = ">=3.10"
 dependencies = [
+    "anthropic>=0.25.0",
+    "boto3>=1.34.113",
     "google-genai>=1.2.0",
     "google-generativeai>=0.8.5",
+    "groq>=0.30.0",
+    "huggingface-hub>=0.33.4",
     "instructor>=1.7.9",
     "isort>=6.0.1",
     "jsonref>=1.1.0",

@@ -1,22 +1,12 @@
 from typing import List, Optional, Type, TypeVar, Union
 import instructor
 from pydantic import BaseModel
-from knowornot.SyncLLMClient.exceptions import InitialCallFailedException
+from .exceptions import InitialCallFailedException
 
 from ..config import OpenRouterConfig
 from ..SyncLLMClient import Message, SyncLLMClient, SyncLLMClientEnum
 from openai import OpenAI
 
-from openai.types.chat import ChatCompletionMessageParam
-from openai.types.chat.chat_completion_assistant_message_param import (
-    ChatCompletionAssistantMessageParam,
-)
-from openai.types.chat.chat_completion_system_message_param import (
-    ChatCompletionSystemMessageParam,
-)
-from openai.types.chat.chat_completion_user_message_param import (
-    ChatCompletionUserMessageParam,
-)
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -50,49 +40,6 @@ class SyncOpenRouterClient(SyncLLMClient):
             )
         else:
             self.instructor_client = None
-
-    def _convert_to_chat_messages(
-        self, prompt: Union[str, List[Message]]
-    ) -> List[ChatCompletionMessageParam]:
-        """
-        Converts a prompt (either string or list of Message objects) into a list of ChatCompletionMessageParam.
-
-        Args:
-            prompt: Either a string or a list of Message objects
-
-        Returns:
-            List[ChatCompletionMessageParam]: List of messages in OpenAI chat format
-        """
-        messages: List[ChatCompletionMessageParam] = []
-
-        if isinstance(prompt, str):
-            user_message: ChatCompletionUserMessageParam = {
-                "role": "user",
-                "content": prompt,
-            }
-            messages.append(user_message)
-        else:
-            for m in prompt:
-                if m.role == "user":
-                    user_message: ChatCompletionUserMessageParam = {
-                        "role": "user",
-                        "content": m.content,
-                    }
-                    messages.append(user_message)
-                elif m.role == "system":
-                    system_message: ChatCompletionSystemMessageParam = {
-                        "role": "system",
-                        "content": m.content,
-                    }
-                    messages.append(system_message)
-                elif m.role == "assistant":
-                    assistant_message: ChatCompletionAssistantMessageParam = {
-                        "role": "assistant",
-                        "content": m.content,
-                    }
-                    messages.append(assistant_message)
-
-        return messages
 
     def _prompt(self, prompt: Union[str, List[Message]], ai_model: str) -> str:
         """

@@ -5,6 +5,8 @@ from enum import Enum
 import logging
 from pydantic import BaseModel
 
+from huggingface_hub.inference._providers import PROVIDER_OR_POLICY_T
+
 
 class ToolType(str, Enum):
     SEARCH = "search"
@@ -61,6 +63,7 @@ class LLMClientConfig(ABC):
     default_model: str
     default_embedding_model: str
     can_use_instructor: bool = False
+    can_use_embeddings: bool = True
     can_use_tools: bool = False
     tools: Optional[List[Tool]] = None
 
@@ -106,6 +109,7 @@ class OpenAIConfig(LLMClientConfig):
 class OpenRouterConfig(LLMClientConfig):
     can_use_instructor: bool = False  # technically can, please override this if your specific openrouter model can!
     default_embedding_model = ""  # no embedding support on openrouter
+    can_use_embeddings = False  # no embedding support on openrouter
 
 
 @dataclass
@@ -119,10 +123,62 @@ class GeminiConfig(LLMClientConfig):
 
 
 @dataclass
+class GroqConfig(LLMClientConfig):
+    can_use_instructor: bool = True
+    default_embedding_model: str = ""
+    can_use_embeddings: bool = False
+
+    def __post_init__(self):
+        if not self.api_key:
+            raise ValueError("api_key is required for GroqConfig")
+
+
+@dataclass
+class AnthropicConfig(LLMClientConfig):
+    can_use_instructor: bool = True
+    default_embedding_model: str = ""
+    can_use_embeddings: bool = False
+
+    def __post_init__(self):
+        if not self.api_key:
+            raise ValueError("api_key is required for AnthropicConfig")
+
+
+@dataclass
+class BedrockConfig(LLMClientConfig):
+    can_use_instructor: bool = True
+    region_name: str = "us-west-2"
+    default_embedding_model: str = ""
+    can_use_embeddings: bool = False
+
+    def __post_init__(self):
+        if not self.api_key:
+            raise ValueError("api_key is required for BedrockConfig")
+
+
+@dataclass
+class HuggingFaceConfig(LLMClientConfig):
+    can_use_instructor: bool = True
+    default_embedding_model: str = ""
+    provider: PROVIDER_OR_POLICY_T = "auto"
+    bill_to: Optional[str] = None
+
+    def __post_init__(self):
+        if not self.api_key:
+            raise ValueError("api_key is required for HuggingFaceConfig")
+        if not self.provider:
+            raise ValueError("provider is required for HuggingFaceConfig")
+
+
+@dataclass
 class Config:
     azure_config: Optional[AzureOpenAIConfig] = None
     azure_batch_config: Optional[AzureOpenAIConfig] = None
     gemini_config: Optional[GeminiConfig] = None
+    groq_config: Optional[GroqConfig] = None
+    anthropic_config: Optional[AnthropicConfig] = None
+    bedrock_config: Optional[BedrockConfig] = None
+    huggingface_config: Optional[HuggingFaceConfig] = None
     arbitrary_keys: dict = field(default_factory=dict)
     logger: logging.Logger = field(default_factory=lambda: logging.getLogger(__name__))
 

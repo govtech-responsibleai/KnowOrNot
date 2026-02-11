@@ -217,10 +217,11 @@ class TestSyncLLMClient(unittest.TestCase):
             BadClient(config=config)  # type: ignore
             # ignore type by type checker as we are deliberately instantiating with the wrong type
 
+        # Python versions vary in wording; assert on stable substring + method name.
         self.assertIn(
-            "Can't instantiate abstract class BadClient without an implementation for abstract method '_generate_structured_response'",
-            str(context.exception),
+            "Can't instantiate abstract class BadClient", str(context.exception)
         )
+        self.assertIn("_generate_structured_response", str(context.exception))
 
     def test_abstract_get_embedding(self):
         # Test that inheriting classes MUST implement get_embedding method
@@ -256,7 +257,8 @@ class TestSyncLLMClient(unittest.TestCase):
             BadClient(config=config)  # type: ignore
             # ignore type by type checker as we are deliberately instantiating with the wrong type
 
+        # Python versions vary in wording; assert on stable substring + method name.
         self.assertIn(
-            "Can't instantiate abstract class BadClient without an implementation for abstract method 'get_embedding'",
-            str(context.exception),
+            "Can't instantiate abstract class BadClient", str(context.exception)
         )
+        self.assertIn("get_embedding", str(context.exception))
